@@ -1,0 +1,10 @@
+touch .gitignore
+open -a TextEdit .gitignore
+```
+
+**Copy and paste this:**
+```
+node_modules/
+.env
+.DS_Store
+*.log
