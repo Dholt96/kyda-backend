@@ -101,6 +101,8 @@ async function initDatabase() {
         votes INTEGER DEFAULT 0,
         chapter VARCHAR(50) NOT NULL,
         status VARCHAR(50) DEFAULT 'pending',
+        contact_phone VARCHAR(50),
+        contact_email VARCHAR(255),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       );
 
@@ -161,6 +163,8 @@ async function initDatabase() {
     await client.query(`
       ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT false;
       ALTER TABLE proposals ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'pending';
+      ALTER TABLE proposals ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(50);
+      ALTER TABLE proposals ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255);
     `);
 
     // Seed admin account
@@ -392,36 +396,54 @@ app.get('/api/rsvps/mine', authenticateToken, async (req, res) => {
 // PROPOSAL ROUTES
 app.get('/api/proposals', async (req, res) => {
   const { chapter } = req.query;
-  
+
+  // Check if caller is admin (token optional)
+  let isAdmin = false;
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (token) {
+    try {
+      const decoded = jwt.verify(token, JWT_SECRET);
+      isAdmin = !!decoded.is_admin;
+    } catch { /* not authenticated or invalid — treat as public */ }
+  }
+
   try {
     let query = 'SELECT * FROM proposals';
     let params = [];
-    
+
     if (chapter) {
       query += ' WHERE chapter = $1';
       params.push(chapter);
     }
-    
+
     query += ' ORDER BY votes DESC, created_at DESC';
-    
+
     const result = await pool.query(query, params);
-    res.json(result.rows);
+    const rows = result.rows.map(p => {
+      if (!isAdmin) {
+        const { contact_phone, contact_email, ...safe } = p;
+        return safe;
+      }
+      return p;
+    });
+    res.json(rows);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch proposals' });
   }
 });
 
 app.post('/api/proposals', authenticateToken, async (req, res) => {
-  const { title, type, location, description, chapter } = req.body;
-  
+  const { title, type, location, description, chapter, contact_phone, contact_email } = req.body;
+
   try {
     const user = await pool.query('SELECT name FROM users WHERE id = $1', [req.user.id]);
-    
+
     const result = await pool.query(
-      `INSERT INTO proposals (title, type, location, description, proposed_by, user_id, chapter, votes) 
-       VALUES ($1, $2, $3, $4, $5, $6, $7, 1) 
+      `INSERT INTO proposals (title, type, location, description, proposed_by, user_id, chapter, votes, contact_phone, contact_email)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 1, $8, $9)
        RETURNING *`,
-      [title, type, location, description, user.rows[0].name, req.user.id, chapter]
+      [title, type, location, description, user.rows[0].name, req.user.id, chapter, contact_phone || null, contact_email || null]
     );
     
     await pool.query(
