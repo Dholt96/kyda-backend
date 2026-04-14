@@ -178,18 +178,24 @@ async function initDatabase() {
       ALTER TABLE proposal_votes ADD COLUMN IF NOT EXISTS notify_on_approve BOOLEAN DEFAULT false;
     `);
 
-    // Seed admin account
+    // Seed/update admin account
     const adminEmail = process.env.ADMIN_EMAIL || 'admin@kyda.com';
-    const adminPassword = process.env.ADMIN_PASSWORD || 'kyda-admin-2024';
+    const adminPassword = process.env.ADMIN_PASSWORD || 'test';
+    const hashed = await bcrypt.hash(adminPassword, 10);
     const existing = await client.query('SELECT id FROM users WHERE email = $1', [adminEmail]);
     if (existing.rows.length === 0) {
-      const hashed = await bcrypt.hash(adminPassword, 10);
       await client.query(
         `INSERT INTO users (name, email, password, city, chapter, is_admin)
          VALUES ('KYDA Admin', $1, $2, 'DC', 'DC', true)`,
         [adminEmail, hashed]
       );
       console.log(`Admin account created: ${adminEmail}`);
+    } else {
+      await client.query(
+        `UPDATE users SET password = $1, is_admin = true WHERE email = $2`,
+        [hashed, adminEmail]
+      );
+      console.log(`Admin account updated: ${adminEmail}`);
     }
 
     console.log('Database initialized successfully');
