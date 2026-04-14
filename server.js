@@ -130,6 +130,16 @@ async function initDatabase() {
         UNIQUE(user_id, chapter_id)
       );
 
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        body TEXT NOT NULL,
+        icon VARCHAR(10) DEFAULT '🔔',
+        read BOOLEAN DEFAULT false,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      );
+
       CREATE TABLE IF NOT EXISTS jersey_orders (
         id SERIAL PRIMARY KEY,
         user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
@@ -165,6 +175,7 @@ async function initDatabase() {
       ALTER TABLE proposals ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'pending';
       ALTER TABLE proposals ADD COLUMN IF NOT EXISTS contact_phone VARCHAR(50);
       ALTER TABLE proposals ADD COLUMN IF NOT EXISTS contact_email VARCHAR(255);
+      ALTER TABLE proposal_votes ADD COLUMN IF NOT EXISTS notify_on_approve BOOLEAN DEFAULT false;
     `);
 
     // Seed admin account
@@ -489,6 +500,63 @@ app.get('/api/proposals/votes/mine', authenticateToken, async (req, res) => {
   }
 });
 
+// PROPOSAL NOTIFY TOGGLE
+app.post('/api/proposals/:id/notify', authenticateToken, async (req, res) => {
+  const { id } = req.params;
+  const { notify } = req.body; // boolean
+
+  try {
+    // Must have voted to toggle notify
+    const vote = await pool.query(
+      'SELECT id FROM proposal_votes WHERE user_id = $1 AND proposal_id = $2',
+      [req.user.id, id]
+    );
+    if (vote.rows.length === 0) return res.status(400).json({ error: 'Must vote before enabling notifications' });
+
+    await pool.query(
+      'UPDATE proposal_votes SET notify_on_approve = $1 WHERE user_id = $2 AND proposal_id = $3',
+      [!!notify, req.user.id, id]
+    );
+    res.json({ notify: !!notify });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to update notification preference' });
+  }
+});
+
+app.get('/api/proposals/notify/mine', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT proposal_id FROM proposal_votes WHERE user_id = $1 AND notify_on_approve = true',
+      [req.user.id]
+    );
+    res.json(result.rows.map(r => r.proposal_id));
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch notify prefs' });
+  }
+});
+
+// NOTIFICATIONS
+app.get('/api/notifications', authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      'SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50',
+      [req.user.id]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+app.post('/api/notifications/read', authenticateToken, async (req, res) => {
+  try {
+    await pool.query('UPDATE notifications SET read = true WHERE user_id = $1', [req.user.id]);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to mark read' });
+  }
+});
+
 // ADMIN PROPOSAL ROUTES
 app.post('/api/proposals/:id/approve', authenticateToken, requireAdmin, async (req, res) => {
   const { id } = req.params;
@@ -510,6 +578,27 @@ app.post('/api/proposals/:id/approve', authenticateToken, requireAdmin, async (r
     );
 
     await pool.query('UPDATE proposals SET status = $1 WHERE id = $2', ['approved', id]);
+
+    // Auto-RSVP and notify users who opted in
+    const interestedVoters = await pool.query(
+      'SELECT user_id FROM proposal_votes WHERE proposal_id = $1 AND notify_on_approve = true',
+      [id]
+    );
+    const eventId = event.rows[0].id;
+    for (const row of interestedVoters.rows) {
+      // RSVP if not already
+      await pool.query(
+        'INSERT INTO rsvps (user_id, event_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+        [row.user_id, eventId]
+      );
+      await pool.query('UPDATE events SET attendees = attendees + 1 WHERE id = $1', [eventId]);
+      // Create notification
+      await pool.query(
+        `INSERT INTO notifications (user_id, title, body, icon)
+         VALUES ($1, $2, $3, '✅')`,
+        [row.user_id, `${p.title} is happening!`, `Your proposal was approved and you've been RSVPed. Check the Events tab.`]
+      );
+    }
 
     res.json({ event: event.rows[0], proposal: { ...p, status: 'approved' } });
   } catch (error) {
