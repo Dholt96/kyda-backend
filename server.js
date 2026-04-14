@@ -37,7 +37,13 @@ const authenticateToken = (req, res, next) => {
 
 // Initialize Database Tables
 async function initDatabase() {
-  const client = await pool.connect();
+  let client;
+  try {
+    client = await pool.connect();
+  } catch (err) {
+    console.error('Database connection failed:', err.message);
+    return;
+  }
   try {
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (
@@ -148,7 +154,7 @@ async function initDatabase() {
   } catch (error) {
     console.error('Error initializing database:', error);
   } finally {
-    client.release();
+    if (client) client.release();
   }
 }
 
@@ -465,9 +471,11 @@ app.get('/api/orders/mine', authenticateToken, async (req, res) => {
   }
 });
 
-// Start server
-initDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`KYDA API server running on port ${PORT}`);
-  });
+// Start server — always listen even if DB init fails
+app.listen(PORT, () => {
+  console.log(`KYDA API server running on port ${PORT}`);
+});
+
+initDatabase().catch(err => {
+  console.error('Database init failed:', err.message);
 });
